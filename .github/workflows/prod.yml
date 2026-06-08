@@ -36,7 +36,7 @@ jobs:
           DB_DATABASE="$PROD_DB_DATABASE"
           DB_USERNAME="$PROD_DB_USERNAME"
           DB_PASSWORD="$PROD_DB_PASSWORD"
-          DEPLOY_PATH="/var/www/kadher.dev/api"
+          DEPLOY_PATH="/var/www/api.kadher.dev"
           COMPOSER_PATH="$PROD_COMPOSER_PATH"
           APP_ENV="production"
 
@@ -81,14 +81,26 @@ jobs:
               cd $TEMP_DIR
               cp .env.example .env
 
-               # Mise à jour des variables d'environnement
-              sed -i \"s|APP_ENV=.*|APP_ENV=production|g\" .env
-              sed -i \"s|APP_DEBUG=.*|APP_DEBUG=false|g\" .env
-              sed -i \"s|DB_HOST=.*|DB_HOST=${DB_HOST}|g\" .env
-              sed -i \"s|DB_PORT=.*|DB_PORT=${DB_PORT}|g\" .env
-              sed -i \"s|DB_DATABASE=.*|DB_DATABASE=${DB_DATABASE}|g\" .env
-              sed -i \"s|DB_USERNAME=.*|DB_USERNAME=${DB_USERNAME}|g\" .env
-              sed -i \"s|DB_PASSWORD=.*|DB_PASSWORD=${DB_PASSWORD}|g\" .env
+              # Fonction utilitaire : remplace la valeur si la clé existe, sinon l'ajoute
+              set_env() {
+                local key=\$1
+                local value=\$2
+                if grep -q \"^\${key}=\" .env; then
+                  sed -i \"s|^\${key}=.*|\${key}=\${value}|g\" .env
+                else
+                  echo \"\${key}=\${value}\" >> .env
+                fi
+              }
+
+              # Mise à jour des variables d'environnement
+              set_env APP_ENV production
+              set_env APP_DEBUG false
+              set_env APP_URL ${APP_URL}
+              set_env DB_HOST ${DB_HOST}
+              set_env DB_PORT ${DB_PORT}
+              set_env DB_DATABASE ${DB_DATABASE}
+              set_env DB_USERNAME ${DB_USERNAME}
+              set_env DB_PASSWORD ${DB_PASSWORD}
                 
                 
               # Nettoyage et installation des dépendances
