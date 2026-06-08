@@ -1,0 +1,181 @@
+name: Production Deployment
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  deploy-prod:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Deploy to Production
+        env:
+          PROD_COMPOSER_PATH: "/usr/local/bin/composer"
+          PROD_SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+          PROD_SSH_USER: ${{ secrets.PROD_SSH_USER }}
+          PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          PROD_DB_HOST: ${{ secrets.PROD_DB_HOST }}
+          PROD_DB_PORT: ${{ secrets.PROD_DB_PORT }}
+          PROD_DB_DATABASE: ${{ secrets.PROD_DB_DATABASE }}
+          PROD_DB_USERNAME: ${{ secrets.PROD_DB_USERNAME }}
+          PROD_DB_PASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+        run: |
+          set -e  # Arrêt sur erreur
+          echo "🚀 Déploiement en Production"
+          SSH_PRIVATE_KEY="$PROD_SSH_PRIVATE_KEY"
+          SSH_USER="$PROD_SSH_USER"
+          SSH_HOST="$PROD_SSH_HOST"
+          DB_HOST="127.0.0.1"
+          DB_PORT="$PROD_DB_PORT"
+          APP_URL="https://api.kadher.dev"
+          DB_DATABASE="$PROD_DB_DATABASE"
+          DB_USERNAME="$PROD_DB_USERNAME"
+          DB_PASSWORD="$PROD_DB_PASSWORD"
+          DEPLOY_PATH="/var/www/kadher.dev/api"
+          COMPOSER_PATH="$PROD_COMPOSER_PATH"
+          APP_ENV="production"
+
+          # Configuration de la clé SSH avec nettoyage automatique
+          trap 'rm -f private_key' EXIT ERR
+          echo "$SSH_PRIVATE_KEY" > private_key
+          chmod 600 private_key
+          
+          # Création du dossier temporaire sur le serveur avec les bonnes permissions
+          TEMP_DIR="/home/tmp/new-kadher.dev-api"  # Correction du nom du dossier temporaire
+          ssh -i private_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 $SSH_USER@$SSH_HOST "
+            sudo mkdir -p $TEMP_DIR && 
+            sudo chown -R $SSH_USER:$SSH_USER $TEMP_DIR &&
+            sudo chmod -R 755 $TEMP_DIR
+          "
+          
+          # Vérification améliorée de la première installation
+          FIRST_INSTALL=$(ssh -i private_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 $SSH_USER@$SSH_HOST "
+            if [ ! -d '$DEPLOY_PATH' ]; then
+              echo 'true'
+            elif [ -z \"\$(ls -A '$DEPLOY_PATH')\" ]; then
+              echo 'true'
+            else
+              echo 'false'
+            fi
+          ")
+          if [ "$FIRST_INSTALL" == "true" ]; then
+            echo "First installation detected - Setting up Laravel directory structure"
+            
+            # Transfert complet des fichiers : Pour une première installation, on transfère tous les fichiers
+            echo "Transfer des fichiers vers repertoire temporaire"
+            rsync -az --exclude '.git*' \
+                      --exclude 'node_modules' \
+                      --exclude '.DS_Store' \
+                      --exclude 'tests' \
+                      -e "ssh -i private_key -o StrictHostKeyChecking=no" \
+                      ./ $SSH_USER@$SSH_HOST:$TEMP_DIR/
+            
+            # Configuration initiale sur le serveur
+            echo "Config du .env file"
+            ssh -i private_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 $SSH_USER@$SSH_HOST "
+              cd $TEMP_DIR
+              cp .env.example .env
+
+               # Mise à jour des variables d'environnement
+              sed -i \"s|APP_ENV=.*|APP_ENV=production|g\" .env
+              sed -i \"s|APP_DEBUG=.*|APP_DEBUG=false|g\" .env
+              sed -i \"s|DB_HOST=.*|DB_HOST=${DB_HOST}|g\" .env
+              sed -i \"s|DB_PORT=.*|DB_PORT=${DB_PORT}|g\" .env
+              sed -i \"s|DB_DATABASE=.*|DB_DATABASE=${DB_DATABASE}|g\" .env
+              sed -i \"s|DB_USERNAME=.*|DB_USERNAME=${DB_USERNAME}|g\" .env
+              sed -i \"s|DB_PASSWORD=.*|DB_PASSWORD=${DB_PASSWORD}|g\" .env
+                
+                
+              # Nettoyage et installation des dépendances
+              rm -rf vendor composer.lock && \
+              echo "📦 Installation des dépendances dans $TEMP_DIR"
+              cd $TEMP_DIR
+              $COMPOSER_PATH install --no-dev --optimize-autoloader --verbose
+             
+             
+              
+              # Déploiement final
+              echo "Transfer des fichiers vers repertoire final"
+              sudo rsync -avz --delete $TEMP_DIR/ $DEPLOY_PATH/
+              
+              echo "Ajustement de permissions"
+              sudo chown -R www-data:www-data $DEPLOY_PATH
+              sudo chmod -R 775 $DEPLOY_PATH
+              sudo chmod -R 775 $DEPLOY_PATH/storage $DEPLOY_PATH/bootstrap/cache
+
+              # S'assurer que les fichiers appartiennent bien au groupe et sont modifiables
+              sudo chmod -R g+rw $DEPLOY_PATH
+              sudo chmod -R g+s $DEPLOY_PATH # Important pour que les nouveaux fichiers appartiennent au groupe www-data
+
+              echo "Vérification des permissions"
+              ls -ld $DEPLOY_PATH
+              ls -ld $DEPLOY_PATH/vendor
+              ls -ld $DEPLOY_PATH/storage
+              ls -ld $DEPLOY_PATH/bootstrap/cache
+
+              echo "commande php"
+              cd $DEPLOY_PATH
+              php artisan key:generate
+              php artisan storage:link
+              php artisan optimize
+              echo "Commande Ok"
+
+
+
+            "
+          else
+            echo "Update detected - Updating existing installation"
+             
+            # Transfert excluant les fichiers sensibles
+            rsync -az --exclude '.git*' \
+                      --exclude 'node_modules' \
+                      --exclude '.DS_Store' \
+                      --exclude '.env' \
+                      --exclude 'storage' \
+                      --exclude 'bootstrap/cache' \
+                      --delete -e "ssh -i private_key -o StrictHostKeyChecking=no" \
+                      ./ $SSH_USER@$SSH_HOST:$TEMP_DIR/
+            
+            # Mise à jour
+            ssh -i private_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 $SSH_USER@$SSH_HOST "
+              cd $TEMP_DIR
+              $COMPOSER_PATH install --no-dev --optimize-autoloader --verbose
+              sudo rsync -avz --exclude '.env' \
+                              --exclude 'storage' \
+                              --exclude 'bootstrap/cache' \
+                              --delete $TEMP_DIR/ $DEPLOY_PATH/
+              sudo chown -R www-data:www-data $DEPLOY_PATH
+              sudo chmod -R 775 $DEPLOY_PATH/storage $DEPLOY_PATH/bootstrap/cache
+
+              # S'assurer que les fichiers appartiennent bien au groupe et sont modifiables
+              sudo chmod -R g+rw $DEPLOY_PATH
+              sudo chmod -R g+s $DEPLOY_PATH # Important pour que les nouveaux fichiers appartiennent au groupe www-data
+            "
+          fi
+          # Nettoyage et redémarrage
+          ssh -i private_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 $SSH_USER@$SSH_HOST "
+            cd $DEPLOY_PATH
+            php artisan down
+            php artisan migrate --force
+            php artisan db:seed --force
+            php artisan log:clear
+            sudo $COMPOSER_PATH dump-autoload -o -d $DEPLOY_PATH
+            php artisan optimize
+            php artisan up
+            sudo systemctl reload php8.4-fpm
+            sudo systemctl restart nginx
+            # sudo supervisorctl restart kadher.dev-worker:*
+            sudo rm -rf $TEMP_DIR
+            
+          "
+          
+          # Nettoyage automatique par trap
+
+      - name: Debug Info
+        run: |
+          echo "Branch: ${{ github.ref_name }}"
